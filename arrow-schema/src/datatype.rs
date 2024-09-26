@@ -92,7 +92,7 @@ use crate::{ArrowError, Field, FieldRef, Fields, UnionFields};
 ///
 /// [`Schema.fbs`]: https://github.com/apache/arrow/blob/main/format/Schema.fbs
 /// [the physical memory layout of Apache Arrow]: https://arrow.apache.org/docs/format/Columnar.html#physical-memory-layout
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DataType {
     /// Null type
@@ -389,6 +389,86 @@ pub enum DataType {
     /// These child arrays are prescribed the standard names of "run_ends" and "values"
     /// respectively.
     RunEndEncoded(FieldRef, FieldRef),
+}
+
+impl PartialEq for DataType {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (DataType::Null, DataType::Null) => true,
+            (DataType::Boolean, DataType::Boolean) => true,
+            (DataType::Int8, DataType::Int8) => true,
+            (DataType::Int16, DataType::Int16) => true,
+            (DataType::Int32, DataType::Int32) => true,
+            (DataType::Int64, DataType::Int64) => true,
+            (DataType::UInt8, DataType::UInt8) => true,
+            (DataType::UInt16, DataType::UInt16) => true,
+            (DataType::UInt32, DataType::UInt32) => true,
+            (DataType::UInt64, DataType::UInt64) => true,
+            (DataType::Float16, DataType::Float16) => true,
+            (DataType::Float32, DataType::Float32) => true,
+            (DataType::Float64, DataType::Float64) => true,
+            (DataType::Timestamp(tu1, ts1), DataType::Timestamp(tu2, ts2))
+                if tu1 == tu2 && ts1 == ts2 =>
+            {
+                true
+            }
+            (DataType::Date32, DataType::Date32) => true,
+            (DataType::Date64, DataType::Date64) => true,
+            (DataType::Time32(tu1), DataType::Time32(tu2)) if tu1 == tu2 => true,
+            (DataType::Time64(tu1), DataType::Time64(tu2)) if tu1 == tu2 => true,
+            (DataType::Duration(tu1), DataType::Duration(tu2)) if tu1 == tu2 => true,
+            (DataType::Interval(iu1), DataType::Interval(iu2)) if iu1 == iu2 => true,
+            (DataType::Binary, DataType::Binary) => true,
+            (DataType::FixedSizeBinary(sz1), DataType::FixedSizeBinary(sz2)) if sz1 == sz2 => true,
+            (DataType::LargeBinary, DataType::LargeBinary) => true,
+            (DataType::BinaryView, DataType::BinaryView) => true,
+            (DataType::Utf8, DataType::Utf8) => true,
+            (DataType::LargeUtf8, DataType::LargeUtf8) => true,
+            (DataType::Utf8View, DataType::Utf8View) => true,
+            (DataType::List(lr1), DataType::List(lr2)) if non_name_eq(lr1, lr2) => true,
+            (DataType::ListView(lr1), DataType::ListView(lr2)) if non_name_eq(lr1, lr2) => true,
+            (DataType::FixedSizeList(lr1, sz1), DataType::FixedSizeList(lr2, sz2))
+                if non_name_eq(lr1, lr2) && sz1 == sz2 =>
+            {
+                true
+            }
+            (DataType::LargeList(lr1), DataType::LargeList(lr2)) if non_name_eq(lr1, lr2) => true,
+            (DataType::LargeListView(lr1), DataType::LargeListView(lr2))
+                if non_name_eq(lr1, lr2) =>
+            {
+                true
+            }
+            (DataType::Struct(f1), DataType::Struct(f2)) if f1 == f2 => true,
+            (DataType::Union(r1, m1), DataType::Union(r2, m2)) if r1 == r2 && m1 == m2 => true,
+            (DataType::Dictionary(k1, v1), DataType::Dictionary(k2, v2))
+                if k1 == k2 && v1 == v2 =>
+            {
+                true
+            }
+            (DataType::Decimal128(p1, s1), DataType::Decimal128(p2, s2))
+                if p1 == p2 && s1 == s2 =>
+            {
+                true
+            }
+            (DataType::Decimal256(p1, s1), DataType::Decimal256(p2, s2))
+                if p1 == p2 && s1 == s2 =>
+            {
+                true
+            }
+            (DataType::Map(k1, v1), DataType::Map(k2, v2)) if k1 == k2 && v1 == v2 => true,
+            (DataType::RunEndEncoded(lr1r, lr1v), DataType::RunEndEncoded(lr2r, lr2v))
+                if non_name_eq(lr1r, lr2r) && non_name_eq(lr1v, lr2v) =>
+            {
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+fn non_name_eq(field_ref1: &FieldRef, field_ref2: &FieldRef) -> bool {
+    field_ref1.data_type() == field_ref2.data_type()
+        && field_ref1.is_nullable() == field_ref2.is_nullable()
 }
 
 /// An absolute length of time in seconds, milliseconds, microseconds or nanoseconds.
