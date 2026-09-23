@@ -22,6 +22,7 @@ use thrift::protocol::{
     TFieldIdentifier, TInputProtocol, TListIdentifier, TMapIdentifier, TMessageIdentifier,
     TOutputProtocol, TSetIdentifier, TStructIdentifier, TType,
 };
+use uuid::Uuid;
 
 /// Reads and writes the struct to Thrift protocols.
 ///
@@ -252,6 +253,12 @@ impl TInputProtocol for TCompactSliceInputProtocol<'_> {
         Ok(f64::from_le_bytes(slice))
     }
 
+    fn read_uuid(&mut self) -> thrift::Result<Uuid> {
+        let (bytes, remaining) = self.buf.split_first_chunk::<16>().ok_or_else(eof_error)?;
+        self.buf = remaining;
+        Ok(Uuid::from_bytes(*bytes))
+    }
+
     fn read_string(&mut self) -> thrift::Result<String> {
         let bytes = self.read_bytes()?;
         String::from_utf8(bytes).map_err(From::from)
@@ -315,6 +322,7 @@ fn u8_to_type(b: u8) -> thrift::Result<TType> {
         0x0A => Ok(TType::Set),
         0x0B => Ok(TType::Map),
         0x0C => Ok(TType::Struct),
+        0x0D => Ok(TType::Uuid),
         unkn => Err(thrift::Error::Protocol(thrift::ProtocolError {
             kind: thrift::ProtocolErrorKind::InvalidData,
             message: format!("cannot convert {unkn} into TType"),
@@ -331,8 +339,29 @@ fn eof_error() -> thrift::Error {
 
 #[cfg(test)]
 mod tests {
+    use thrift::protocol::{TInputProtocol, TOutputProtocol, TType};
+    use uuid::Uuid;
+
+    use super::{u8_to_type, TCompactOutputProtocol};
     use crate::format::{BoundaryOrder, ColumnIndex};
     use crate::thrift::{TCompactSliceInputProtocol, TSerializable};
+
+    #[test]
+    fn read_uuid_roundtrip_and_truncated_input() {
+        let expected = Uuid::from_bytes([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+        let mut bytes = Vec::new();
+        let mut output = TCompactOutputProtocol::new(&mut bytes);
+        output.write_uuid(&expected).unwrap();
+        output.write_byte(42).unwrap();
+        let mut input = TCompactSliceInputProtocol::new(&bytes);
+        assert_eq!(input.read_uuid().unwrap(), expected);
+        assert_eq!(input.read_byte().unwrap(), 42);
+        for len in 0..16 {
+            let mut input = TCompactSliceInputProtocol::new(&bytes[..len]);
+            assert!(input.read_uuid().is_err());
+        }
+        assert_eq!(u8_to_type(0x0D).unwrap(), TType::Uuid);
+    }
 
     #[test]
     pub fn read_boolean_list_field_type() {
