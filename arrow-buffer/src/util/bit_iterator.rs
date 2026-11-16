@@ -4,6 +4,7 @@
 
 //! Types for iterating over packed bitmasks
 
+use crate::ToByteSlice;
 use crate::bit_chunk_iterator::{UnalignedBitChunk, UnalignedBitChunkIterator};
 use crate::bit_util::{ceil, get_bit_raw};
 
@@ -306,17 +307,7 @@ impl<'a> BitIndexIterator<'a> {
             return None;
         }
 
-        let mut skipped = 0;
-        // Adjacent occupied words and short zero gaps do not need a bulk scan.
-        while skipped < 8 && skipped < self.chunks.len() {
-            if self.chunks[skipped] != 0 {
-                break;
-            }
-            skipped += 1;
-        }
-        if skipped == 8 {
-            skipped += first_nonzero_word(&self.chunks[skipped..]);
-        }
+        let skipped = first_nonzero_word(self.chunks);
 
         if let Some(&word) = self.chunks.get(skipped) {
             self.current_chunk = u64::from_le(word);
@@ -349,14 +340,19 @@ impl Iterator for BitIndexIterator<'_> {
     }
 }
 
-// Fixed-size OR reductions allow vectorized zero scans without decoding individual set bits.
+// Byte-sized position candidates let a SIMD minimum both skip empty blocks and locate
+// the first occupied word, without a second search through the winning block.
+#[inline]
 fn first_nonzero_word(words: &[u64]) -> usize {
     let (blocks, tail) = words.as_chunks::<8>();
     for (index, block) in blocks.iter().enumerate() {
-        let combined =
-            block[0] | block[1] | block[2] | block[3] | block[4] | block[5] | block[6] | block[7];
-        if combined != 0 {
-            return index * 8 + block.iter().position(|&word| word != 0).unwrap_or(8);
+        let bytes = block.as_slice().to_byte_slice();
+        let mut first = 64_u8;
+        for byte in 0..64 {
+            first = first.min(if bytes[byte] != 0 { byte as u8 } else { 64 });
+        }
+        if first < 64 {
+            return index * 8 + usize::from(first) / 8;
         }
     }
     blocks.len() * 8
