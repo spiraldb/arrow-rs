@@ -271,24 +271,66 @@ impl Iterator for BitSliceIterator<'_> {
 pub struct BitIndexIterator<'a> {
     current_chunk: u64,
     chunk_offset: i64,
-    iter: UnalignedBitChunkIterator<'a>,
+    chunks: &'a [u64],
+    suffix: Option<u64>,
 }
 
 impl<'a> BitIndexIterator<'a> {
     /// Create a new [`BitIndexIterator`] from the provide `buffer`,
     /// and `offset` and `len` in bits
+    #[inline]
     pub fn new(buffer: &'a [u8], offset: usize, len: usize) -> Self {
-        let chunks = UnalignedBitChunk::new(buffer, offset, len);
-        let mut iter = chunks.iter();
-
-        let current_chunk = iter.next().unwrap_or(0);
-        let chunk_offset = -(chunks.lead_padding() as i64);
+        let unaligned = UnalignedBitChunk::new(buffer, offset, len);
+        let mut chunks = unaligned.chunks();
+        let mut suffix = unaligned.suffix().filter(|&word| word != 0);
+        let current_chunk = if let Some(prefix) = unaligned.prefix() {
+            prefix
+        } else if let Some((&word, rest)) = chunks.split_first() {
+            chunks = rest;
+            u64::from_le(word)
+        } else {
+            suffix.take().unwrap_or(0)
+        };
 
         Self {
             current_chunk,
-            chunk_offset,
-            iter,
+            chunk_offset: -(unaligned.lead_padding() as i64),
+            chunks,
+            suffix,
         }
+    }
+
+    #[inline]
+    fn advance_to_nonzero_word(&mut self) -> Option<()> {
+        if self.chunks.is_empty() && self.suffix.is_none() {
+            return None;
+        }
+
+        let mut skipped = 0;
+        // Adjacent occupied words and short zero gaps do not need a bulk scan.
+        while skipped < 8 && skipped < self.chunks.len() {
+            if self.chunks[skipped] != 0 {
+                break;
+            }
+            skipped += 1;
+        }
+        if skipped == 8 {
+            skipped += first_nonzero_word(&self.chunks[skipped..]);
+        }
+
+        if let Some(&word) = self.chunks.get(skipped) {
+            self.current_chunk = u64::from_le(word);
+            self.chunks = &self.chunks[skipped + 1..];
+            self.chunk_offset += (skipped as i64 + 1) * 64;
+            return Some(());
+        }
+
+        let remaining = self.chunks.len();
+        self.chunks = &[];
+        let suffix = self.suffix.take()?;
+        self.chunk_offset += (remaining as i64 + 1) * 64;
+        self.current_chunk = suffix;
+        Some(())
     }
 }
 
@@ -297,17 +339,31 @@ impl Iterator for BitIndexIterator<'_> {
 
     #[inline(always)]
     fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            if self.current_chunk != 0 {
-                let bit_pos = self.current_chunk.trailing_zeros();
-                self.current_chunk &= self.current_chunk - 1;
-                return Some((self.chunk_offset + bit_pos as i64) as usize);
-            }
+        if self.current_chunk == 0 {
+            self.advance_to_nonzero_word()?;
+        }
 
-            self.current_chunk = self.iter.next()?;
-            self.chunk_offset += 64;
+        let bit_pos = self.current_chunk.trailing_zeros();
+        self.current_chunk &= self.current_chunk - 1;
+        Some((self.chunk_offset + bit_pos as i64) as usize)
+    }
+}
+
+// Fixed-size OR reductions allow vectorized zero scans without decoding individual set bits.
+fn first_nonzero_word(words: &[u64]) -> usize {
+    let (blocks, tail) = words.as_chunks::<8>();
+    for (index, block) in blocks.iter().enumerate() {
+        let combined =
+            block[0] | block[1] | block[2] | block[3] | block[4] | block[5] | block[6] | block[7];
+        if combined != 0 {
+            return index * 8 + block.iter().position(|&word| word != 0).unwrap_or(8);
         }
     }
+    blocks.len() * 8
+        + tail
+            .iter()
+            .position(|&word| word != 0)
+            .unwrap_or(tail.len())
 }
 
 /// An iterator of u32 whose index in a provided bitmask is true
@@ -460,6 +516,32 @@ mod tests {
     fn test_bit_iterator_bounds() {
         let mask = &[223, 23];
         BitIterator::new(mask, 17, 0);
+    }
+
+    fn assert_bit_indices(buffer: &[u8], offset: usize, len: usize, expected: &[usize]) {
+        let mut iter = BitIndexIterator::new(buffer, offset, len);
+        assert_eq!(iter.by_ref().collect::<Vec<_>>(), expected);
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_bit_index_sparse_words() {
+        let buffer = BooleanBuffer::collect_bool(4_099, |i| matches!(i, 7 | 2_055 | 4_098));
+        assert_bit_indices(buffer.values(), 0, 4_099, &[7, 2_055, 4_098]);
+    }
+
+    #[test]
+    fn test_bit_index_sparse_offset_ignores_padding() {
+        let buffer = BooleanBuffer::collect_bool(4_120, |i| {
+            matches!(i, 0 | 12 | 13 | 2_055 | 4_102 | 4_113 | 4_119)
+        });
+        assert_bit_indices(&buffer.values()[1..], 5, 4_101, &[0, 2_042, 4_089, 4_100]);
+    }
+
+    #[test]
+    fn test_bit_index_all_zero_words_and_tail() {
+        assert_bit_indices(&[0; 1_025], 0, 8_193, &[]);
     }
 
     #[test]
