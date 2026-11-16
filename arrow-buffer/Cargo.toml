@@ -40,6 +40,10 @@ name = "bit_mask"
 harness = false
 
 [[bench]]
+name = "bit_index"
+harness = false
+
+[[bench]]
 name = "divisor"
 harness = false
 
